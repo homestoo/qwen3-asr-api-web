@@ -1,6 +1,166 @@
-// EdgeOne Pages 专用版本 
+/**
+ * 处理 /v1/audio/transcriptions 请求
+ * @param {Object} context - EdgeOne Pages 上下文对象
+ * @returns {Promise<Response>} HTTP 响应
+ */
+export default async function onRequest(context) {
+  const request = context.request;
 
-// CORS response helpers
+  // 处理 CORS 预检请求
+  if (request.method === "OPTIONS") return handleOptions(request);
+  
+  try {
+    console.log("EdgeOne Pages函数被调用:", request.method, request.url);
+    
+    const url = new URL(request.url);
+    console.log("请求路径:", url.pathname);
+
+    // 健康检查
+    if (url.pathname === "/healthz" || url.pathname === "/v1/audio/healthz") {
+      return new Response("ok", {
+        status: 200,
+        headers: { 
+          "Content-Type": "text/plain; charset=utf-8",
+          ...corsHeaders()
+        }
+      });
+    }
+
+    // 调试端点
+    if (url.pathname === "/v1/audio/debug") {
+      return new Response(JSON.stringify({
+        message: "EdgeOne Pages Debug Info",
+        timestamp: new Date().toISOString(),
+        pathname: url.pathname,
+        method: request.method,
+        status: "running",
+        server: "EdgeOne Pages Tencent Cloud"
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+
+    // 主要的转录API
+    if (url.pathname === "/v1/audio/transcriptions") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "method must be POST" }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders()
+          }
+        });
+      }
+
+      console.log("开始处理转录请求");
+
+      try {
+        const form = await request.formData();
+        const file = form.get("file");
+        
+        if (!file || typeof file.name !== 'string') {
+          return new Response(JSON.stringify({ error: "missing or invalid file field" }), {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders()
+            }
+          });
+        }
+        
+        console.log("文件信息:", {
+          name: file.name,
+          size: file.size,
+          type: file.type
+        });
+        
+        // 获取所有参数
+        const language = form.get("language")?.toString() || "auto";
+        const prompt = form.get("prompt")?.toString() || "";
+        const modelRaw = form.get("model")?.toString() || "";
+        const upstreamUrl = form.get("upstream_url")?.toString() || "";
+        const customKey = form.get("custom_key")?.toString() || "";
+        const customHeader = form.get("custom_header")?.toString() || "";
+        
+        console.log("收到的所有参数:", {
+          language,
+          model: modelRaw,
+          upstreamUrl,
+          customKey: !!customKey,
+          customHeader,
+          hasPrompt: !!prompt
+        });
+        
+        // 检查是否为自定义代理
+        if (customHeader !== "" || customKey !== "") {
+          console.log("使用自定义代理服务");
+          return await handleCustomProxy({ file, language, prompt, upstreamUrl, customKey, customHeader, model: modelRaw });
+        }
+        
+        // 检查API Key
+        const auth = request.headers.get("Authorization") || request.headers.get("authorization");
+        const dashKey = auth && auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+        
+        if (dashKey) {
+          console.log("使用DashScope服务");
+          return await handleDashscope({ file, language, prompt, modelRaw, dashKey });
+        } else if (upstreamUrl) {
+          console.log("使用Z.ai代理服务");
+          return await handleZaiProxy({ file, language, prompt, upstreamUrl, model: modelRaw });
+        } else {
+          console.log("没有配置任何服务");
+          return new Response(JSON.stringify({ 
+            error: "No service configured. Please provide either: 1) Authorization Bearer token for DashScope, 2) upstream_url for Z.ai proxy, or 3) custom_key and custom_header for custom proxy" 
+          }), {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders()
+            }
+          });
+        }
+        
+      } catch (e) {
+        console.error("表单解析失败:", e);
+        return new Response(JSON.stringify({ error: `failed to parse form: ${e.message}` }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders()
+          }
+        });
+      }
+    }
+
+    // 404响应
+    return new Response(JSON.stringify({ error: "not found" }), {
+      status: 404,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
+    
+  } catch (error) {
+    console.error("函数执行异常:", error);
+    return new Response(JSON.stringify({
+      error: "internal server error",
+      detail: error.message
+    }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
+  }
+}
+
+// CORS 头部
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -9,30 +169,209 @@ function corsHeaders() {
   };
 }
 
-function withCors(res) {
-  const h = new Headers(res.headers);
-  for (const [k, v] of Object.entries(corsHeaders())) {
-    h.set(k, v);
+// 处理 OPTIONS 请求
+function handleOptions(request) {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders()
+  });
+}
+
+// DashScope处理函数 - 修复EdgeOne Pages环境下的OSS上传
+async function handleDashscope({ file, language, prompt, modelRaw, dashKey }) {
+  try {
+    const model = (modelRaw || "").replace(/:itn$/i, "") || "qwen3-asr-flash";
+    const enableITN = modelRaw.includes(":itn");
+
+    console.log(`DashScope请求 - 模型: ${model}, 语言: ${language}`);
+
+    // 1. 获取上传策略
+    const policyUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
+    console.log("构建的Policy URL:", policyUrl);
+    const policyResp = await fetch(policyUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${dashKey}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!policyResp.ok) {
+      const errorText = await policyResp.text();
+      console.error("获取策略失败:", errorText);
+      console.error("Policy URL:", policyUrl);
+      console.error("Response Status:", policyResp.status);
+      return new Response(JSON.stringify({ error: "getPolicy failed", detail: `Policy URL: ${policyUrl}, Error: ${errorText}` }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+
+    const policyData = await policyResp.json();
+    const policy = policyData?.data;
+    
+    if (!policy) {
+      return new Response(JSON.stringify({ error: "invalid policy response", detail: policyData }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+
+    console.log("策略获取成功:", {
+      upload_host: policy.upload_host,
+      upload_dir: policy.upload_dir,
+      hasKey: !!policy.oss_access_key_id
+    });
+
+    // 2. 上传文件 - 使用手动构建multipart的方式（与server.js备用方案相同）
+    const uploadDir = (policy.upload_dir || "").replace(/\/+$/, "");
+    const fileExt = file.name.split('.').pop() || 'wav';
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(2, 8);
+    const finalKey = uploadDir ? `${uploadDir}/${timestamp}_${randomId}.${fileExt}` : `${timestamp}_${randomId}.${fileExt}`;
+
+    console.log("准备上传到:", finalKey);
+    let uploadHost = policy.upload_host;
+    if (!uploadHost.startsWith('http')) {
+      uploadHost = `https://${uploadHost}`;
+    }
+    console.log("OSS上传主机:", uploadHost);
+    
+    if (!uploadHost) {
+      return new Response(JSON.stringify({ error: "invalid upload host", detail: "Missing upload_host in policy response" }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+    
+    // 检查uploadHost是否包含路径，避免重复路径
+    console.log("OSS上传策略详情:", {
+      uploadHost,
+      policy,
+      finalKey,
+      fullUrl: uploadHost
+    });
+
+    // 使用手动构建multipart的方式（与server.js方法2相同）
+    console.log("使用手动构建multipart方式");
+    
+    const boundary = `----WebKitFormBoundary${Date.now()}`;
+    const multipartArray = [];
+
+    // 严格按照OSS顺序添加字段
+    const fieldOrder = [
+      { name: "OSSAccessKeyId", value: policy.oss_access_key_id },
+      { name: "policy", value: policy.policy },
+      { name: "Signature", value: policy.signature },
+      { name: "key", value: finalKey }
+    ];
+
+    for (const field of fieldOrder) {
+      multipartArray.push(`--${boundary}`);
+      multipartArray.push(`Content-Disposition: form-data; name="${field.name}"`);
+      multipartArray.push(``);
+      multipartArray.push(field.value);
+    }
+
+    // 可选字段
+    if (policy.x_oss_object_acl) {
+      multipartArray.push(`--${boundary}`);
+      multipartArray.push(`Content-Disposition: form-data; name="x-oss-object-acl"`);
+      multipartArray.push(``);
+      multipartArray.push(policy.x_oss_object_acl);
+    }
+    
+    if (policy.x_oss_forbid_overwrite) {
+      multipartArray.push(`--${boundary}`);
+      multipartArray.push(`Content-Disposition: form-data; name="x-oss-forbid-overwrite"`);
+      multipartArray.push(``);
+      multipartArray.push(policy.x_oss_forbid_overwrite);
+    }
+    
+    if (policy.x_oss_security_token) {
+      multipartArray.push(`--${boundary}`);
+      multipartArray.push(`Content-Disposition: form-data; name="x-oss-security-token"`);
+      multipartArray.push(``);
+      multipartArray.push(policy.x_oss_security_token);
+    }
+
+    multipartArray.push(`--${boundary}`);
+    multipartArray.push(`Content-Disposition: form-data; name="success_action_status"`);
+    multipartArray.push(``);
+    multipartArray.push("200");
+
+    // 文件字段
+    multipartArray.push(`--${boundary}`);
+    multipartArray.push(`Content-Disposition: form-data; name="file"; filename="${file.name}"`);
+    multipartArray.push(`Content-Type: ${file.type || "application/octet-stream"}`);
+    multipartArray.push(``);
+
+    // 构建完整数据
+    const multipartText = multipartArray.join("\r\n") + "\r\n";
+    const endBoundary = `\r\n--${boundary}--\r\n`;
+
+    const fileBuffer = await file.arrayBuffer();
+    const fileBytes = new Uint8Array(fileBuffer);
+    
+    const textEncoder = new TextEncoder();
+    const textBytes = textEncoder.encode(multipartText);
+    const endBytes = textEncoder.encode(endBoundary);
+
+    const totalLength = textBytes.length + fileBytes.length + endBytes.length;
+    const finalData = new Uint8Array(totalLength);
+
+    finalData.set(textBytes, 0);
+    finalData.set(fileBytes, textBytes.length);
+    finalData.set(endBytes, textBytes.length + fileBytes.length);
+
+    console.log("手动multipart构建完成，大小:", totalLength);
+
+    const ossResp = await fetch(uploadHost, {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": totalLength.toString()
+      },
+      body: finalData
+    });
+
+    console.log("OSS响应状态:", ossResp.status, ossResp.statusText);
+
+    if (!ossResp.ok) {
+      const errorText = await ossResp.text();
+      console.error("OSS上传失败:", errorText);
+      return new Response(JSON.stringify({ error: "OSS upload failed", detail: errorText }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+
+    const ossUrl = `oss://${finalKey}`;
+    console.log("OSS上传成功:", ossUrl);
+    return await continueASR(ossUrl, model, language, prompt, enableITN, dashKey);
+
+  } catch (error) {
+    console.error("DashScope处理异常:", error);
+    return new Response(JSON.stringify({ error: "processing failed", detail: error.message }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
   }
-  return new Response(res.body, { status: res.status, headers: h });
-}
-
-function ok(text) {
-  return withCors(new Response(text, { 
-    status: 200, 
-    headers: { "Content-Type": "text/plain; charset=utf-8" } 
-  }));
-}
-
-function json(data, status = 200) {
-  return withCors(new Response(JSON.stringify(data), { 
-    status, 
-    headers: { "Content-Type": "application/json" } 
-  }));
-}
-
-function badRequest(message) {
-  return json({ error: message }, 400);
 }
 
 // 分离的ASR调用函数
@@ -79,7 +418,13 @@ async function continueASR(ossUrl, model, language, prompt, enableITN, dashKey) 
   
   if (!asrResp.ok) {
     console.error("ASR调用失败:", asrJSON);
-    return json({ error: "ASR failed", detail: asrJSON }, 502);
+    return new Response(JSON.stringify({ error: "ASR failed", detail: asrJSON }), {
+      status: 502,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
   }
 
   const msg = asrJSON?.output?.choices?.[0]?.message;
@@ -88,304 +433,13 @@ async function continueASR(ossUrl, model, language, prompt, enableITN, dashKey) 
     : "";
 
   console.log("ASR识别成功:", text);
-  return json({ text });
-}
-
-// DashScope处理 - EdgeOne Pages兼容版本
-async function handleDashscope({ file, language, prompt, modelRaw, enableITN, dashKey }) {
-  try {
-    const model = (modelRaw || "").replace(/:itn$/i, "") || "paraformer-realtime-8k-v1";
-    
-    console.log(`DashScope请求 - 模型: ${model}, 语言: ${language}`);
-    console.log("文件信息:", { name: file.name, size: file.size, type: file.type });
-    
-    // 1. 获取上传策略
-    const policyUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
-    const policyResp = await fetch(policyUrl, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${dashKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!policyResp.ok) {
-      const errorText = await policyResp.text();
-      console.error("获取策略失败:", errorText);
-      return json({ error: "getPolicy failed", detail: errorText }, 502);
+  return new Response(JSON.stringify({ text }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders()
     }
-
-    const policyData = await policyResp.json();
-    const policy = policyData?.data;
-    
-    if (!policy) {
-      return json({ error: "invalid policy response", detail: policyData }, 502);
-    }
-
-    console.log("策略获取成功:", {
-      upload_host: policy.upload_host,
-      upload_dir: policy.upload_dir,
-      hasKey: !!policy.oss_access_key_id
-    });
-
-    // 2. 上传文件 - 尝试多种方法
-    const uploadDir = (policy.upload_dir || "").replace(/\/+$/, "");
-    const fileExt = file.name.split('.').pop() || 'wav';
-    const timestamp = Date.now();
-    const randomId = Math.random().toString(36).substring(2, 8);
-    const key = uploadDir ? `${uploadDir}/${timestamp}_${randomId}.${fileExt}` : `${timestamp}_${randomId}.${fileExt}`;
-
-    console.log("准备上传到:", key);
-    let uploadHost = policy.upload_host;
-    if (!uploadHost.startsWith('http')) {
-      uploadHost = `https://${uploadHost}`;
-    }
-
-    // 方法1: 尝试标准FormData
-    try {
-      console.log("尝试方法1: 标准FormData");
-      const formData = new FormData();
-      
-      formData.append("OSSAccessKeyId", policy.oss_access_key_id);
-      formData.append("policy", policy.policy);
-      formData.append("Signature", policy.signature);
-      formData.append("key", key);
-      
-      if (policy.x_oss_object_acl) {
-        formData.append("x-oss-object-acl", policy.x_oss_object_acl);
-      }
-      if (policy.x_oss_forbid_overwrite) {
-        formData.append("x-oss-forbid-overwrite", policy.x_oss_forbid_overwrite);
-      }
-      if (policy.x_oss_security_token) {
-        formData.append("x-oss-security-token", policy.x_oss_security_token);
-      }
-      
-      formData.append("success_action_status", "200");
-      formData.append("file", file, file.name);
-
-      const ossResp = await fetch(uploadHost, {
-        method: "POST",
-        body: formData
-      });
-
-      console.log("方法1响应状态:", ossResp.status, ossResp.statusText);
-
-      if (ossResp.ok) {
-        const ossUrl = `oss://${key}`;
-        console.log("方法1成功: OSS上传成功:", ossUrl);
-        return await continueASR(ossUrl, model, language, prompt, enableITN, dashKey);
-      } else {
-        const errorText = await ossResp.text();
-        console.error("方法1失败:", errorText);
-        throw new Error("FormData failed");
-      }
-      
-    } catch (formError) {
-      console.log("标准FormData失败，尝试方法2: 手动构建multipart");
-      
-      // 方法2: 手动构建multipart (更兼容)
-      const boundary = `----WebKitFormBoundary${Date.now()}`;
-      const multipartArray = [];
-
-      // 严格按照OSS顺序添加字段
-      const fieldOrder = [
-        { name: "OSSAccessKeyId", value: policy.oss_access_key_id },
-        { name: "policy", value: policy.policy },
-        { name: "Signature", value: policy.signature },
-        { name: "key", value: key }
-      ];
-
-      for (const field of fieldOrder) {
-        multipartArray.push(`--${boundary}`);
-        multipartArray.push(`Content-Disposition: form-data; name="${field.name}"`);
-        multipartArray.push(``);
-        multipartArray.push(field.value);
-      }
-
-      // 可选字段
-      if (policy.x_oss_object_acl) {
-        multipartArray.push(`--${boundary}`);
-        multipartArray.push(`Content-Disposition: form-data; name="x-oss-object-acl"`);
-        multipartArray.push(``);
-        multipartArray.push(policy.x_oss_object_acl);
-      }
-      
-      if (policy.x_oss_forbid_overwrite) {
-        multipartArray.push(`--${boundary}`);
-        multipartArray.push(`Content-Disposition: form-data; name="x-oss-forbid-overwrite"`);
-        multipartArray.push(``);
-        multipartArray.push(policy.x_oss_forbid_overwrite);
-      }
-      
-      if (policy.x_oss_security_token) {
-        multipartArray.push(`--${boundary}`);
-        multipartArray.push(`Content-Disposition: form-data; name="x-oss-security-token"`);
-        multipartArray.push(``);
-        multipartArray.push(policy.x_oss_security_token);
-      }
-
-      multipartArray.push(`--${boundary}`);
-      multipartArray.push(`Content-Disposition: form-data; name="success_action_status"`);
-      multipartArray.push(``);
-      multipartArray.push("200");
-
-      // 文件字段
-      multipartArray.push(`--${boundary}`);
-      multipartArray.push(`Content-Disposition: form-data; name="file"; filename="${file.name}"`);
-      multipartArray.push(`Content-Type: ${file.type || "application/octet-stream"}`);
-      multipartArray.push(``);
-
-      // 构建完整数据
-      const multipartText = multipartArray.join("\r\n") + "\r\n";
-      const endBoundary = `\r\n--${boundary}--\r\n`;
-
-      const fileBuffer = await file.arrayBuffer();
-      const fileBytes = new Uint8Array(fileBuffer);
-      
-      const textEncoder = new TextEncoder();
-      const textBytes = textEncoder.encode(multipartText);
-      const endBytes = textEncoder.encode(endBoundary);
-
-      const totalLength = textBytes.length + fileBytes.length + endBytes.length;
-      const finalData = new Uint8Array(totalLength);
-
-      finalData.set(textBytes, 0);
-      finalData.set(fileBytes, textBytes.length);
-      finalData.set(endBytes, textBytes.length + fileBytes.length);
-
-      console.log("手动multipart构建完成，大小:", totalLength);
-
-      const ossResp = await fetch(uploadHost, {
-        method: "POST",
-        headers: {
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          "Content-Length": totalLength.toString()
-        },
-        body: finalData
-      });
-
-      console.log("方法2响应状态:", ossResp.status, ossResp.statusText);
-
-      if (!ossResp.ok) {
-        const errorText = await ossResp.text();
-        console.error("方法2也失败:", errorText);
-        return json({ error: "OSS upload failed", detail: errorText }, 502);
-      }
-
-      const ossUrl = `oss://${key}`;
-      console.log("方法2成功: OSS上传成功:", ossUrl);
-      return await continueASR(ossUrl, model, language, prompt, enableITN, dashKey);
-    }
-
-  } catch (error) {
-    console.error("DashScope处理异常:", error);
-    return json({ error: "processing failed", detail: error.message }, 500);
-  }
-}
-
-// 主入口函数 - EdgeOne Pages
-export default async function onRequest(context) {
-  globalThis.context = context; // 保存context供全局使用
-  const request = context.request;
-  
-  console.log("EdgeOne Pages函数被调用:", request.method, request.url);
-  
-  try {
-    // CORS预检
-    if (request.method === "OPTIONS") {
-      return withCors(new Response(null, { status: 204 }));
-    }
-
-    const url = new URL(request.url);
-    console.log("请求路径:", url.pathname);
-
-    // 健康检查
-    if (url.pathname === "/v1/audio/healthz") {
-      return ok("ok");
-    }
-
-    // 调试端点
-    if (url.pathname === "/v1/audio/debug") {
-      return json({ 
-        message: "EdgeOne Pages Debug Info",
-        timestamp: new Date().toISOString(),
-        pathname: url.pathname,
-        method: request.method,
-        status: "running"
-      });
-    }
-
-    // 主要的转录API
-    if (url.pathname === "/v1/audio/transcriptions") {
-      if (request.method !== "POST") {
-        return badRequest("method must be POST");
-      }
-
-      console.log("开始处理转录请求");
-
-      // 解析表单数据
-      let form;
-      try {
-        form = await request.formData();
-        console.log("表单数据解析成功");
-      } catch (e) {
-        console.error("表单解析失败:", e);
-        return badRequest(`failed to parse form: ${e.message}`);
-      }
-
-      const file = form.get("file");
-      if (!file || typeof file.name !== 'string') {
-        console.error("文件字段缺失或无效");
-        return badRequest("missing or invalid file field");
-      }
-
-      console.log("文件信息:", {
-        name: file.name,
-        size: file.size,
-        type: file.type
-      });
-
-      const language = form.get("language")?.toString() || "auto";
-      const prompt = form.get("prompt")?.toString() || "";
-      const modelRaw = form.get("model")?.toString() || "";
-      const upstreamUrl = form.get("upstream_url")?.toString() || "";
-      const customKey = form.get("custom_key")?.toString() || "";
-      const customHeader = form.get("custom_header")?.toString() || "";
-      const enableITN = modelRaw.toLowerCase().includes(":itn");
-
-      console.log("参数:", { language, model: modelRaw, hasPrompt: !!prompt, enableITN, hasCustomKey: !!customKey, hasCustomHeader: !!customHeader });
-
-      // 检查是否为自定义代理
-      if (customHeader !== "" || customKey !== "") {
-        console.log("使用自定义代理服务");
-        return await handleCustomProxy({ file, language, prompt, upstreamUrl, customKey, customHeader, model: modelRaw });
-      }
-
-      // 检查API Key
-      const auth = request.headers.get("Authorization") || request.headers.get("authorization");
-      const dashKey = auth && auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-
-      if (dashKey) {
-        console.log("使用DashScope服务");
-        return await handleDashscope({ file, language, prompt, modelRaw, enableITN, dashKey });
-      } else {
-        console.log("使用Z.ai代理服务");
-        return await handleZaiProxy({ file, language, prompt, upstreamUrl, model: modelRaw });
-      }
-    }
-
-    // 404响应
-    console.log("未找到匹配的路由:", url.pathname);
-    return json({ error: "not found" }, 404);
-
-  } catch (error) {
-    console.error("函数执行异常:", error);
-    return json({ 
-      error: "internal server error", 
-      detail: error.message 
-    }, 500);
-  }
+  });
 }
 
 // Z.ai代理处理函数
@@ -393,22 +447,22 @@ async function handleZaiProxy({ file, language, prompt, upstreamUrl, model }) {
   try {
     console.log("开始Z.ai代理处理");
     
-    // 优先使用前端传递的代理地址，如果没有则使用环境变量
-    const ctx = globalThis.context || {};
-    const upstreamEndpoint = upstreamUrl || ctx.env?.UPSTREAM_ASR_ENDPOINT;
-    
-    if (!upstreamEndpoint) {
-      return json({ 
+    if (!upstreamUrl) {
+      return new Response(JSON.stringify({ 
         error: "upstream URL required", 
-        detail: "请提供Z.ai代理地址或配置环境变量" 
-      }, 400);
+        detail: "请提供Z.ai代理地址" 
+      }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
     }
     
-    console.log("代理地址来源:", upstreamUrl ? "前端输入" : "环境变量");
-    console.log("Z.ai代理地址:", upstreamEndpoint);
+    console.log("Z.ai代理地址:", upstreamUrl);
     
     // 转换为OpenAI兼容格式，但内部仍调用Z.ai API
-    // OpenAI格式使用multipart/form-data，但Z.ai需要JSON格式
     console.log("转换OpenAI格式到Z.ai API格式");
     
     // 将文件转换为base64
@@ -425,22 +479,13 @@ async function handleZaiProxy({ file, language, prompt, upstreamUrl, model }) {
       },
       context: prompt || "",
       language: language === "auto" ? "zh" : language,
-      enable_itn: enableITN,
-      model: modelRaw || undefined // 如果有模型参数则传递
+      enable_itn: model.toLowerCase().includes(":itn"),
+      model: model || undefined
     };
     
     console.log("发送请求到Z.ai代理");
-    console.log("请求详情:", {
-      url: upstreamEndpoint,
-      method: "POST",
-      file: { name: file.name, size: file.size, type: file.type },
-      language,
-      hasPrompt: !!prompt,
-      enableITN,
-      bodySize: JSON.stringify(zaiRequestBody).length
-    });
     
-    const response = await fetch(upstreamEndpoint, {
+    const response = await fetch(upstreamUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -453,18 +498,22 @@ async function handleZaiProxy({ file, language, prompt, upstreamUrl, model }) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error("Z.ai代理请求失败:", errorText);
-      return json({ 
+      return new Response(JSON.stringify({ 
         error: "Z.ai proxy request failed", 
         detail: `HTTP ${response.status}: ${errorText}` 
-      }, 502);
+      }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
     }
     
     const result = await response.json();
     console.log("Z.ai代理响应成功");
     
     // 转换Z.ai响应为OpenAI兼容格式
-    // Z.ai格式: { success: true, data: ["识别文本", "语言检测结果"] }
-    // OpenAI格式: { text: "识别文本" }
     let openaiResponse;
     if (result.success && Array.isArray(result.data) && result.data[0]) {
       openaiResponse = { text: result.data[0] };
@@ -474,14 +523,26 @@ async function handleZaiProxy({ file, language, prompt, upstreamUrl, model }) {
       openaiResponse = { text: "" };
     }
     
-    return json(openaiResponse);
+    return new Response(JSON.stringify(openaiResponse), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
     
   } catch (error) {
     console.error("Z.ai代理处理异常:", error);
-    return json({ 
+    return new Response(JSON.stringify({ 
       error: "Z.ai proxy processing failed", 
       detail: error.message 
-    }, 500);
+    }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
   }
 }
 
@@ -490,21 +551,75 @@ async function handleCustomProxy({ file, language, prompt, upstreamUrl, customKe
   try {
     console.log("开始自定义代理处理");
     
-    // 使用前端传递的代理地址
     if (!upstreamUrl) {
-      return json({ 
+      return new Response(JSON.stringify({ 
         error: "upstream URL required", 
         detail: "请提供自定义代理地址" 
-      }, 400);
+      }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
+    }
+    
+    // 检查URL格式
+    if (!upstreamUrl.startsWith('http://') && !upstreamUrl.startsWith('https://')) {
+      console.log("URL格式检查失败，添加https://前缀");
+      upstreamUrl = 'https://' + upstreamUrl;
+    }
+    
+    // 检查URL是否有效
+    try {
+      const urlObj = new URL(upstreamUrl);
+      
+      // 检查是否是EdgeOne Pages自身的地址，避免循环调用
+      const currentHost = request.headers.get('host') || '';
+      const upstreamHost = urlObj.hostname;
+      
+      if (upstreamHost === currentHost || upstreamHost.includes('edgeone') || upstreamHost.includes('tencentcloud')) {
+        return new Response(JSON.stringify({ 
+          error: "invalid upstream URL", 
+          detail: `不能使用EdgeOne Pages自身的地址作为代理服务器。请使用外部API服务地址。` 
+        }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders()
+          }
+        });
+      }
+      
+    } catch (e) {
+      return new Response(JSON.stringify({ 
+        error: "invalid upstream URL", 
+        detail: `提供的代理地址无效: ${upstreamUrl}` 
+      }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
     }
     
     console.log("自定义代理地址:", upstreamUrl);
     console.log("认证方式:", customHeader, "有API Key:", !!customKey);
+    console.log("请求参数详情:", {
+      url: upstreamUrl,
+      method: "POST",
+      hasAuth: !!(customKey && customHeader !== "none"),
+      authType: customHeader,
+      fileName: file.name,
+      fileSize: file.size,
+      model: model || "whisper-1",
+      language: language,
+      hasPrompt: !!prompt
+    });
     
     // 构建请求头
-    const headers = {
-      "Content-Type": "application/json"
-    };
+    const headers = {};
     
     // 根据选择的认证方式添加认证头
     if (customKey && customHeader !== "none") {
@@ -515,91 +630,245 @@ async function handleCustomProxy({ file, language, prompt, upstreamUrl, customKe
       }
     }
     
-    // 构建标准的OpenAI multipart/form-data请求
-    // 注意：EdgeOne Pages环境中需要手动构建multipart数据
-    const boundary = `----WebKitFormBoundary${Date.now()}`;
-    const multipartArray = [];
+    // 首先尝试标准OpenAI multipart/form-data格式
+    try {
+      console.log("尝试标准OpenAI multipart/form-data格式");
+      
+      // 构建标准的OpenAI multipart/form-data请求
+      const boundary = `----WebKitFormBoundary${Date.now()}`;
+      const multipartArray = [];
 
-    // 文件字段
-    multipartArray.push(`--${boundary}`);
-    multipartArray.push(`Content-Disposition: form-data; name="file"; filename="${file.name}"`);
-    multipartArray.push(`Content-Type: ${file.type || "audio/wav"}`);
-    multipartArray.push(``);
-
-    // 读取文件数据
-    const fileBuffer = await file.arrayBuffer();
-    const fileBytes = new Uint8Array(fileBuffer);
-
-    // 模型字段
-    multipartArray.push(`--${boundary}`);
-    multipartArray.push(`Content-Disposition: form-data; name="model"`);
-    multipartArray.push(``);
-    multipartArray.push(model || "whisper-1");
-
-    // 语言字段（如果不是auto）
-    if (language !== "auto") {
+      // 文件字段
       multipartArray.push(`--${boundary}`);
-      multipartArray.push(`Content-Disposition: form-data; name="language"`);
+      multipartArray.push(`Content-Disposition: form-data; name="file"; filename="${file.name}"`);
+      multipartArray.push(`Content-Type: ${file.type || "audio/wav"}`);
       multipartArray.push(``);
-      multipartArray.push(language);
-    }
 
-    // 提示字段（如果有）
-    if (prompt) {
+      // 读取文件数据
+      const fileBuffer = await file.arrayBuffer();
+      const fileBytes = new Uint8Array(fileBuffer);
+
+      // 模型字段
       multipartArray.push(`--${boundary}`);
-      multipartArray.push(`Content-Disposition: form-data; name="prompt"`);
+      multipartArray.push(`Content-Disposition: form-data; name="model"`);
       multipartArray.push(``);
-      multipartArray.push(prompt);
+      multipartArray.push(model || "whisper-1");
+
+      // 语言字段（如果不是auto）
+      if (language !== "auto") {
+        multipartArray.push(`--${boundary}`);
+        multipartArray.push(`Content-Disposition: form-data; name="language"`);
+        multipartArray.push(``);
+        multipartArray.push(language);
+      }
+
+      // 提示字段（如果有）
+      if (prompt) {
+        multipartArray.push(`--${boundary}`);
+        multipartArray.push(`Content-Disposition: form-data; name="prompt"`);
+        multipartArray.push(``);
+        multipartArray.push(prompt);
+      }
+
+      // 构建完整数据
+      const multipartText = multipartArray.join("\r\n") + "\r\n";
+      const endBoundary = `\r\n--${boundary}--\r\n`;
+
+      const textEncoder = new TextEncoder();
+      const textBytes = textEncoder.encode(multipartText);
+      const endBytes = textEncoder.encode(endBoundary);
+
+      const totalLength = textBytes.length + fileBytes.length + endBytes.length;
+      const finalData = new Uint8Array(totalLength);
+
+      finalData.set(textBytes, 0);
+      finalData.set(fileBytes, textBytes.length);
+      finalData.set(endBytes, textBytes.length + fileBytes.length);
+
+      // 设置正确的Content-Type
+      headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
+
+      // 先测试连接
+    console.log("测试代理服务器连接...");
+    try {
+      const testResponse = await fetch(upstreamUrl, {
+        method: "GET",
+        headers: headers
+      });
+      console.log("测试连接响应状态:", testResponse.status);
+      if (testResponse.status === 405) {
+        console.log("服务器不支持GET方法，这是正常的，继续POST请求");
+      } else if (!testResponse.ok) {
+        const testErrorText = await testResponse.text();
+        console.log("测试连接失败:", testErrorText);
+      }
+    } catch (testError) {
+      console.log("测试连接异常:", testError.message);
     }
-
-    // 构建完整数据
-    const multipartText = multipartArray.join("\r\n") + "\r\n";
-    const endBoundary = `\r\n--${boundary}--\r\n`;
-
-    const textEncoder = new TextEncoder();
-    const textBytes = textEncoder.encode(multipartText);
-    const endBytes = textEncoder.encode(endBoundary);
-
-    const totalLength = textBytes.length + fileBytes.length + endBytes.length;
-    const finalData = new Uint8Array(totalLength);
-
-    finalData.set(textBytes, 0);
-    finalData.set(fileBytes, textBytes.length);
-    finalData.set(endBytes, textBytes.length + fileBytes.length);
-
-    // 设置正确的Content-Type
-    headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
-
-    console.log("发送请求到自定义代理");
-    console.log("请求详情:", {
-      url: upstreamUrl,
-      method: "POST",
-      file: { name: file.name, size: file.size, type: file.type },
-      model: model || "whisper-1",
-      language,
-      hasPrompt: !!prompt
-    });
-
+    
+    console.log("发送标准格式请求到自定义代理");
+      
+      let response = await fetch(upstreamUrl, {
+        method: "POST",
+        headers: headers,
+        body: finalData
+      });
+      
+      console.log("标准格式响应状态:", response.status);
+      
+      // 如果标准格式成功，直接返回
+      if (response.ok) {
+        const responseText = await response.text();
+        console.log("自定义代理响应成功 (标准格式)");
+        
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch (e) {
+          console.error("响应不是JSON格式:", e.message);
+          return new Response(JSON.stringify({ 
+            error: "Invalid response format", 
+            detail: `服务返回了非JSON响应。响应内容: ${responseText.substring(0, 200)}...` 
+          }), {
+            status: 502,
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders()
+            }
+          });
+        }
+        
+        // 解析OpenAI格式响应
+        let openaiResponse;
+        if (result.text) {
+          openaiResponse = { text: result.text };
+        } else if (result.success && Array.isArray(result.data) && result.data[0]) {
+          openaiResponse = { text: result.data[0] };
+        } else {
+          openaiResponse = { text: JSON.stringify(result) };
+        }
+        
+        return new Response(JSON.stringify(openaiResponse), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders()
+          }
+        });
+      }
+      
+      // 如果标准格式失败，尝试备用JSON格式
+      const errorText = await response.text();
+      console.error("标准OpenAI格式失败，尝试备用JSON格式:", errorText);
+      console.error("标准格式请求详情:", {
+        url: upstreamUrl,
+        method: "POST",
+        contentType: headers["Content-Type"],
+        bodySize: finalData.length,
+        responseStatus: response.status,
+        responseHeaders: Object.fromEntries(response.headers.entries())
+      });
+      
+    } catch (fetchError) {
+      console.error("标准格式请求失败，尝试备用JSON格式:", fetchError.message);
+    }
+    
+    // 备用方案：使用JSON格式（向后兼容）
+    console.log("使用备用JSON格式请求...");
+    
+    // 将文件转换为base64
+    const arrayBuffer = await file.arrayBuffer();
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    
+    const jsonHeaders = { ...headers };
+    jsonHeaders["Content-Type"] = "application/json";
+    
+    const fallbackBody = {
+      audio_file: {
+        data: base64,
+        name: file.name,
+        type: file.type || "audio/wav",
+        size: file.size
+      },
+      context: prompt || "",
+      language: language === "auto" ? "zh" : language,
+      enable_itn: model.toLowerCase().includes(":itn"),
+      model: model || undefined
+    };
+    
     const response = await fetch(upstreamUrl, {
       method: "POST",
-      headers: headers,
-      body: finalData
+      headers: jsonHeaders,
+      body: JSON.stringify(fallbackBody)
     });
     
-    console.log("自定义代理响应状态:", response.status);
+    console.log("备用格式响应状态:", response.status);
     
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("自定义代理请求失败:", errorText);
-      return json({ 
+      console.error("备用JSON格式请求失败:", errorText);
+      console.error("备用格式请求详情:", {
+        url: upstreamUrl,
+        method: "POST",
+        contentType: jsonHeaders["Content-Type"],
+        responseStatus: response.status,
+        responseHeaders: Object.fromEntries(response.headers.entries())
+      });
+      
+      // 提供更友好的错误信息
+      let friendlyError = `HTTP ${response.status}: ${errorText}`;
+      if (errorText.includes('MethodNotAllowed')) {
+        // 检查是否是因为路径问题导致的
+        let suggestions = [];
+        
+        if (upstreamUrl.endsWith('/')) {
+          suggestions.push('移除URL末尾的斜杠');
+        }
+        
+        const commonPaths = ['/api/v1/audio/transcriptions', '/v1/transcriptions', '/transcribe', '/api/transcribe'];
+        for (const path of commonPaths) {
+          if (!upstreamUrl.includes(path)) {
+            suggestions.push(`尝试添加路径: ${path}`);
+          }
+        }
+        
+        if (upstreamUrl.split('/').length <= 3) {
+          suggestions.push('URL路径过短，可能需要添加API路径前缀');
+        }
+        
+        friendlyError = `服务器不支持POST方法。请检查代理服务器配置。
+URL: ${upstreamUrl}
+可能的解决方案:
+${suggestions.map(s => `- ${s}`).join('\n')}
+常见API路径格式:
+- https://your-proxy.com/api/v1/audio/transcriptions
+- https://your-proxy.com/v1/transcriptions
+- https://your-proxy.com/transcribe`;
+        
+      } else if (errorText.includes('not found')) {
+        friendlyError = `服务器返回404错误。请检查代理服务器地址和路径是否正确。URL: ${upstreamUrl}`;
+      }
+      
+      return new Response(JSON.stringify({ 
         error: "Custom proxy request failed", 
-        detail: `HTTP ${response.status}: ${errorText}` 
-      }, 502);
+        detail: friendlyError,
+        debug: {
+          url: upstreamUrl,
+          method: "POST",
+          status: response.status,
+          errorText: errorText.substring(0, 500)
+        }
+      }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
     }
     
     const responseText = await response.text();
-    console.log("自定义代理响应内容类型:", response.headers.get("content-type"));
-    console.log("自定义代理响应前100字符:", responseText.substring(0, 100));
+    console.log("自定义代理响应成功");
     
     let result;
     try {
@@ -607,10 +876,16 @@ async function handleCustomProxy({ file, language, prompt, upstreamUrl, customKe
       console.log("自定义代理响应成功 (JSON格式)");
     } catch (e) {
       console.error("响应不是JSON格式，可能是HTML错误页面:", e.message);
-      return json({ 
+      return new Response(JSON.stringify({ 
         error: "Invalid response format", 
         detail: `服务返回了HTML响应而不是JSON。响应内容: ${responseText.substring(0, 200)}...` 
-      }, 502);
+      }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders()
+        }
+      });
     }
     
     // 尝试解析响应为OpenAI格式
@@ -626,13 +901,25 @@ async function handleCustomProxy({ file, language, prompt, upstreamUrl, customKe
       openaiResponse = { text: JSON.stringify(result) };
     }
     
-    return json(openaiResponse);
+    return new Response(JSON.stringify(openaiResponse), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
     
   } catch (error) {
     console.error("自定义代理处理异常:", error);
-    return json({ 
+    return new Response(JSON.stringify({ 
       error: "Custom proxy processing failed", 
       detail: error.message 
-    }, 500);
+    }), {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders()
+      }
+    });
   }
 }
