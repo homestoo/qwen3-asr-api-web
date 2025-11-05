@@ -3,7 +3,7 @@
 ## 📋 项目概述
 
 这是一个兼容OpenAI接口的Qwen3语音识别(ASR)服务，支持多种部署方式。提供完整的语音转文字功能，包括多语言支持、智能标点格式化，以及与OpenAI Whisper API完全兼容的接口。
-
+ <img width="916" height="743" alt="截屏2025-11-05 19 40 54" src="https://github.com/user-attachments/assets/315e29c0-22a8-4c82-8728-20f613b22d51" />
 ## 🚀 快速导航
 
 ### 选择部署方式
