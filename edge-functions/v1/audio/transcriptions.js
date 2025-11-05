@@ -59,9 +59,136 @@ export default async function onRequest(context) {
       console.log("开始处理转录请求");
 
       try {
-        const form = await request.formData();
-        const file = form.get("file");
+        // 先尝试获取请求的 Content-Type
+        const contentType = request.headers.get("content-type") || "";
+        console.log("=== EdgeOne Pages 请求信息 ===");
+        console.log("请求 Content-Type:", contentType);
+        console.log("请求 Content-Length:", request.headers.get("content-length"));
+        console.log("请求 User-Agent:", request.headers.get("user-agent"));
+        console.log("所有请求头:", Object.fromEntries(request.headers.entries()));
+        console.log("=== 请求信息结束 ===");
         
+        let file, language, prompt, modelRaw, upstreamUrl, customKey, customHeader;
+        
+        if (contentType.includes("application/json")) {
+          // 处理 JSON 格式的请求 (spokenText 可能使用这种格式)
+          console.log("处理 JSON 格式请求");
+          let jsonBody;
+          try {
+            jsonBody = await request.json();
+          } catch (jsonError) {
+            console.error("JSON 解析失败:", jsonError);
+            return new Response(JSON.stringify({ 
+              error: "failed to parse JSON", 
+              detail: jsonError.message 
+            }), {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders()
+              }
+            });
+          }
+          
+          // 从 JSON 中提取参数
+          if (jsonBody.audio_file) {
+            // spokenText 可能发送 base64 编码的音频数据
+            const audioData = jsonBody.audio_file;
+            
+            if (typeof audioData === 'string') {
+              // 处理 base64 编码的音频
+              const base64Data = audioData.includes('base64,') 
+                ? audioData.split('base64,')[1] 
+                : audioData;
+              
+              let binaryString;
+              try {
+                binaryString = atob(base64Data);
+              } catch (base64Error) {
+                console.error("Base64 解码失败:", base64Error);
+                return new Response(JSON.stringify({ 
+                  error: "failed to decode base64 audio data", 
+                  detail: "Invalid base64 format" 
+                }), {
+                  status: 400,
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...corsHeaders()
+                  }
+                });
+              }
+              
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              
+              const blob = new Blob([bytes], { type: jsonBody.audio_file?.type || "audio/wav" });
+              file = new File([blob], jsonBody.audio_file?.name || "audio.wav", { 
+                type: jsonBody.audio_file?.type || "audio/wav" 
+              });
+            } else if (audioData.data) {
+              // 处理包含 base64 数据的对象格式
+              const base64Data = audioData.data;
+              let binaryString;
+              try {
+                binaryString = atob(base64Data);
+              } catch (base64Error) {
+                console.error("Base64 解码失败:", base64Error);
+                return new Response(JSON.stringify({ 
+                  error: "failed to decode base64 audio data", 
+                  detail: "Invalid base64 format" 
+                }), {
+                  status: 400,
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...corsHeaders()
+                  }
+                });
+              }
+              
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              
+              const blob = new Blob([bytes], { type: audioData.type || "audio/wav" });
+              file = new File([blob], audioData.name || "audio.wav", { 
+                type: audioData.type || "audio/wav" 
+              });
+            }
+          }
+          
+          language = jsonBody.language || "auto";
+          prompt = jsonBody.prompt || jsonBody.context || "";
+          modelRaw = jsonBody.model || "";
+          upstreamUrl = jsonBody.upstream_url || "";
+          customKey = jsonBody.custom_key || "";
+          customHeader = jsonBody.custom_header || "";
+          
+          console.log("JSON 请求参数解析完成:", {
+            hasFile: !!file,
+            language,
+            model: modelRaw,
+            hasPrompt: !!prompt
+          });
+          
+        } else {
+          // 处理 multipart/form-data 格式请求
+          console.log("处理 FormData 格式请求");
+          const form = await request.formData();
+          file = form.get("file");
+          
+          // 获取所有参数
+          language = form.get("language")?.toString() || "auto";
+          prompt = form.get("prompt")?.toString() || "";
+          modelRaw = form.get("model")?.toString() || "";
+          upstreamUrl = form.get("upstream_url")?.toString() || "";
+          customKey = form.get("custom_key")?.toString() || "";
+          customHeader = form.get("custom_header")?.toString() || "";
+        }
+        
+        // 验证文件是否存在
         if (!file || typeof file.name !== 'string') {
           return new Response(JSON.stringify({ error: "missing or invalid file field" }), {
             status: 400,
@@ -77,14 +204,6 @@ export default async function onRequest(context) {
           size: file.size,
           type: file.type
         });
-        
-        // 获取所有参数
-        const language = form.get("language")?.toString() || "auto";
-        const prompt = form.get("prompt")?.toString() || "";
-        const modelRaw = form.get("model")?.toString() || "";
-        const upstreamUrl = form.get("upstream_url")?.toString() || "";
-        const customKey = form.get("custom_key")?.toString() || "";
-        const customHeader = form.get("custom_header")?.toString() || "";
         
         console.log("收到的所有参数:", {
           language,
@@ -125,8 +244,32 @@ export default async function onRequest(context) {
         }
         
       } catch (e) {
-        console.error("表单解析失败:", e);
-        return new Response(JSON.stringify({ error: `failed to parse form: ${e.message}` }), {
+        console.error("=== 表单解析失败详细信息 ===");
+        console.error("错误类型:", e.constructor.name);
+        console.error("错误消息:", e.message);
+        console.error("错误堆栈:", e.stack);
+        console.error("Content-Type:", contentType);
+        console.error("Content-Length:", request.headers.get("content-length"));
+        
+        // 尝试读取原始请求体进行调试
+        try {
+          const requestBody = await request.text();
+          console.error("请求体前200字符:", requestBody.substring(0, 200));
+          console.error("请求体长度:", requestBody.length);
+        } catch (bodyError) {
+          console.error("无法读取请求体:", bodyError.message);
+        }
+        
+        console.error("=== 错误信息结束 ===");
+        
+        return new Response(JSON.stringify({ 
+          error: `failed to parse form: ${e.message}`,
+          debug: {
+            contentType: contentType,
+            contentLength: request.headers.get("content-length"),
+            errorType: e.constructor.name
+          }
+        }), {
           status: 400,
           headers: {
             "Content-Type": "application/json",
@@ -146,10 +289,23 @@ export default async function onRequest(context) {
     });
     
   } catch (error) {
-    console.error("函数执行异常:", error);
+    console.error("=== 函数执行异常详细信息 ===");
+    console.error("错误类型:", error.constructor.name);
+    console.error("错误消息:", error.message);
+    console.error("错误堆栈:", error.stack);
+    console.error("请求URL:", request.url);
+    console.error("请求方法:", request.method);
+    console.error("请求头:", Object.fromEntries(request.headers.entries()));
+    console.error("=== 异常信息结束 ===");
+    
     return new Response(JSON.stringify({
       error: "internal server error",
-      detail: error.message
+      detail: error.message,
+      debug: {
+        errorType: error.constructor.name,
+        url: request.url,
+        method: request.method
+      }
     }), {
       status: 500,
       headers: {
@@ -575,7 +731,7 @@ async function handleCustomProxy({ file, language, prompt, upstreamUrl, customKe
       const urlObj = new URL(upstreamUrl);
       
       // 检查是否是EdgeOne Pages自身的地址，避免循环调用
-      const currentHost = request.headers.get('host') || '';
+      const currentHost = context.request.headers.get('host') || '';
       const upstreamHost = urlObj.hostname;
       
       if (upstreamHost === currentHost || upstreamHost.includes('edgeone') || upstreamHost.includes('tencentcloud')) {
