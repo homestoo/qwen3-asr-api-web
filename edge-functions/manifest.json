@@ -1,7 +1,0 @@
-{
-  "version": "1.0",
-  "runtime": "nodejs18",
-  "entry": "v1/audio/transcriptions.js",
-  "handler": "onRequest",
-  "environment": {}
-}
