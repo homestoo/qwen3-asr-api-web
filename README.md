@@ -4,21 +4,22 @@
 
 这是一个兼容OpenAI接口的Qwen3语音识别(ASR)服务，支持多种部署方式。提供完整的语音转文字功能，包括多语言支持、智能标点格式化，以及与OpenAI Whisper API完全兼容的接口。
  <img width="916" height="743" alt="截屏2025-11-05 19 40 54" src="https://github.com/user-attachments/assets/315e29c0-22a8-4c82-8728-20f613b22d51" />
+
 ## 🚀 快速导航
 
 ### 选择部署方式
 
 | 部署方式 | 适用场景 | 快速开始 |
 |----------|----------|----------|
-| **[🔧 本地开发](#本地开发部署)** | 开发测试、快速调试 | `npm install && npm run dev` |
-| **[🐳 Docker容器](#docker容器部署)** | 服务器部署、环境一致 | `./deploy.sh start` |
-| **[☁️ EdgeOne Pages](#edgeone-pages云部署)** | 生产环境、免运维 | 控制台上传代码 |
+| **[🔧 本地开发](#-方式一本地开发部署)** | 开发测试、快速调试 | `npm install && npm run dev` |
+| **[🐳 Docker容器](#-方式二docker容器部署)** | 服务器部署、环境一致 | `./deploy.sh start` |
+| **[☁️ EdgeOne Pages](#-方式三edgeone-pages云部署)** | 生产环境、免运维 | 控制台上传代码 |
 
 ### 推荐部署流程
 
-1. **开发阶段** → [本地开发部署](#本地开发部署)
-2. **测试阶段** → [Docker容器部署](#docker容器部署)  
-3. **生产阶段** → [EdgeOne Pages云部署](#edgeone-pages云部署)
+1. **开发阶段** → [本地开发部署](#-方式一本地开发部署)
+2. **测试阶段** → [Docker容器部署](#-方式二docker容器部署)  
+3. **生产阶段** → [EdgeOne Pages云部署](#-方式三edgeone-pages云部署)
 
 ---
 
@@ -74,7 +75,7 @@ qwen3-asr-web/
 
 ---
 
-## 🔧 方式一：本地开发部署 {#本地开发部署}
+## 🔧 方式一：本地开发部署
 
 ### 环境准备
 
@@ -140,7 +141,7 @@ npm run dev
 
 ---
 
-## 🐳 方式二：Docker容器部署 {#docker容器部署}
+## 🐳 方式二：Docker容器部署
 
 ### 环境准备
 
@@ -280,7 +281,7 @@ cp docker-compose.yml docker-compose.yml.backup
 
 ---
 
-## ☁️ 方式三：EdgeOne Pages云部署 {#edgeone-pages云部署}
+## ☁️ 方式三：EdgeOne Pages云部署
 
 ### 准备工作
 
