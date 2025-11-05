@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen3 语音识别服务 - Web界面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+            font-weight: 400;
+        }
+
+        .header .version {
+            font-size: 0.85rem;
+            opacity: 0.7;
+            margin-top: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+
+        .main {
+            padding: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            background: #f9fafb;
+        }
+
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #374151;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-subtitle {
+            font-size: 0.9rem;
+            color: #6b7280;
+            margin-top: -10px;
+            margin-bottom: 15px;
+            font-weight: 400;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        input[type="text"],
+        input[type="url"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus,
+        input[type="url"]:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .file-upload-btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: #4f46e5;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background-color 0.2s;
+            text-align: center;
+        }
+
+        .file-upload-btn:hover {
+            background: #4338ca;
+        }
+
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: #e0e7ff;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #3730a3;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px 24px;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(16, 185, 129, 0.3);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .status.loading {
+            background: #fef3c7;
+            color: #92400e;
+            border: 1px solid #fcd34d;
+        }
+
+        .status.success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #34d399;
+        }
+
+        .status.error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #f87171;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            background: #1f2937;
+            color: #f9fafb;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            font-weight: 500;
+            color: #6b7280;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            color: #4f46e5;
+            border-bottom-color: #4f46e5;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 5px;
+        }
+
+        .audio-player {
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #e5e7eb;
+            border-top-color: #4f46e5;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ Qwen3 语音识别服务</h1>
+            <p>OpenAI 兼容的智能语音识别与转录服务</p>
+
+        </div>
+
+        <div class="main">
+            <!-- API 配置 -->
+            <div class="section">
+                <h2 class="section-title">
+                    <span>⚙️</span> 服务配置
+                </h2>
+                <div class="section-subtitle">
+                    选择语音识别服务提供商并配置相应的API参数
+                </div>
+                
+                        <div class="tabs">
+                    <button class="tab active" onclick="switchTab('dashscope')">DashScope</button>
+                    <button class="tab" onclick="switchTab('zai')">Z.ai 代理</button>
+                    <button class="tab" onclick="switchTab('custom')">自定义代理</button>
+                </div>
+
+                <div id="dashscope-tab" class="tab-content active">
+                    <div class="form-group">
+                        <label for="api-key">DashScope API Key:</label>
+                        <input type="text" id="api-key" placeholder="sk-xxxxxxxxxxxxx">
+                        <div class="help-text">DashScope API Key，格式：sk-xxx，用于阿里云语音识别服务</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="model">识别模型:</label>
+                        <select id="model">
+                            <option value="qwen3-asr-flash">qwen3-asr-flash (快速识别)</option>
+                            <option value="qwen3-asr">qwen3-asr (标准识别)</option>
+                            <option value="qwen3-asr-flash:itn">qwen3-asr-flash:itn (快速+智能标点)</option>
+                            <option value="qwen3-asr:itn">qwen3-asr:itn (标准+智能标点)</option>
+                        </select>
+                        <div class="help-text">推荐使用快速识别模型，ITN功能会自动添加标点和格式化</div>
+                    </div>
+                </div>
+
+                <div id="zai-tab" class="tab-content">
+                    <div class="form-group">
+                        <label for="upstream-url">Z.ai 代理地址:</label>
+                        <input type="url" id="upstream-url" placeholder="https://your-zai-service.com/api/transcribe">
+                        <div class="help-text">Z.ai ASR代理服务的完整URL地址</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="zai-model">识别模型:</label>
+                        <select id="zai-model">
+                            <option value="qwen3-asr-flash">qwen3-asr-flash (快速识别)</option>
+                            <option value="qwen3-asr">qwen3-asr (标准识别)</option>
+                            <option value="qwen3-asr-flash:itn">qwen3-asr-flash:itn (快速+智能标点)</option>
+                            <option value="qwen3-asr:itn">qwen3-asr:itn (标准+智能标点)</option>
+                        </select>
+                        <div class="help-text">选择识别模型，推荐使用快速识别模型</div>
+                    </div>
+                </div>
+
+                <div id="custom-tab" class="tab-content">
+                    <div class="form-group">
+                        <label for="custom-url">自定义代理域名:</label>
+                        <input type="url" id="custom-url" placeholder="https://your-custom-asr-service.com">
+                        <div class="help-text">自定义ASR服务的域名，会自动添加 /v1/audio/transcriptions</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-model">识别模型:</label>
+                        <select id="custom-model">
+                            <option value="qwen3-asr-flash">qwen3-asr-flash (快速识别)</option>
+                            <option value="qwen3-asr">qwen3-asr (标准识别)</option>
+                            <option value="qwen3-asr-flash:itn">qwen3-asr-flash:itn (快速+智能标点)</option>
+                            <option value="qwen3-asr:itn">qwen3-asr:itn (标准+智能标点)</option>
+                        </select>
+                        <div class="help-text">选择识别模型，推荐使用快速识别模型</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-key">API Key (*必填):</label>
+                        <input type="text" id="custom-key" placeholder="sk-xxxxxxxxxxxxx" required>
+                        <div class="help-text">自定义服务的API Key，必须填写</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom-header">Auth Header (可选):</label>
+                        <select id="custom-header">
+                            <option value="Authorization">Authorization (Bearer Token)</option>
+                            <option value="X-API-Key">X-API-Key (Custom Header)</option>
+                            <option value="none">无需认证</option>
+                        </select>
+                        <div class="help-text">选择API Key的传递方式</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 音频上传 -->
+            <div class="section">
+                <h2 class="section-title">
+                    <span>📁</span> 音频文件上传
+                </h2>
+                <div class="section-subtitle">
+                    支持多种音频格式：MP3、WAV、M4A、FLAC、OGG等
+                </div>
+                
+                <label for="audio-file" class="file-upload-btn">
+                    📂 选择音频文件
+                </label>
+                <input type="file" id="audio-file" accept="audio/*" onchange="handleFileSelect(event)">
+                
+                <div id="file-info" class="file-info" style="display: none;">
+                    <div id="file-details"></div>
+                    <audio id="audio-player" class="audio-player" controls style="display: none;"></audio>
+                </div>
+            </div>
+
+            <!-- 语音参数 -->
+            <div class="section">
+                <h2 class="section-title">
+                    <span>🎛️</span> 识别参数
+                </h2>
+                <div class="section-subtitle">
+                    设置语言识别参数和智能提示词以提升识别准确度
+                </div>
+                
+                <div class="form-group">
+                    <label for="language">语言:</label>
+                    <select id="language">
+                        <option value="auto">自动检测</option>
+                        <option value="zh">中文</option>
+                        <option value="en">英文</option>
+                        <option value="ja">日文</option>
+                        <option value="ko">韩文</option>
+                        <option value="yue">粤语</option>
+                        <option value="zh-TW">繁体中文</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="prompt">提示词 (可选):</label>
+                    <textarea id="prompt" rows="3" placeholder="例如：这是一段关于技术讨论的录音，包含专业术语"></textarea>
+                    <div class="help-text">帮助模型更好地理解音频内容的专业领域和背景</div>
+                </div>
+            </div>
+
+  
+            <!-- 提交按钮 -->
+            <button class="submit-btn" onclick="submitRequest()" id="submit-btn">
+                🚀 开始语音识别
+            </button>
+
+            <!-- 状态显示 -->
+            <div id="status" class="status" style="display: none;"></div>
+
+            <!-- 结果显示 -->
+            <div id="result" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentTab = 'dashscope';
+        let selectedFile = null;
+
+      function switchTab(tab) {
+            currentTab = tab;
+            
+            console.log('切换到标签:', tab);
+            
+            // 切换标签样式
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            // 激活当前标签按钮
+            const activeTabButton = document.querySelector(`button[onclick="switchTab('${tab}')"]`);
+            if (activeTabButton) {
+                activeTabButton.classList.add('active');
+            }
+            
+            // 激活对应的内容区域
+            const tabContent = document.getElementById(`${tab}-tab`);
+            if (tabContent) {
+                tabContent.classList.add('active');
+            }
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                selectedFile = null;
+                document.getElementById('file-info').style.display = 'none';
+                return;
+            }
+
+            // 检查文件类型
+            if (!file.type.startsWith('audio/')) {
+                showStatus('请选择音频文件', 'error');
+                event.target.value = '';
+                return;
+            }
+
+            selectedFile = file;
+            
+            // 显示文件信息
+            const fileInfo = document.getElementById('file-info');
+            const fileDetails = document.getElementById('file-details');
+            const audioPlayer = document.getElementById('audio-player');
+            
+            fileDetails.innerHTML = `
+                <strong>文件名:</strong> ${file.name}<br>
+                <strong>大小:</strong> ${(file.size / 1024 / 1024).toFixed(2)} MB<br>
+                <strong>类型:</strong> ${file.type}
+            `;
+            
+            // 设置音频播放器
+            audioPlayer.src = URL.createObjectURL(file);
+            audioPlayer.style.display = 'block';
+            
+            fileInfo.style.display = 'block';
+        }
+
+        async function submitRequest() {
+            if (!selectedFile) {
+                showStatus('请先选择音频文件', 'error');
+                return;
+            }
+
+            const submitBtn = document.getElementById('submit-btn');
+            const originalText = submitBtn.innerHTML;
+            
+            try {
+                // 禁用按钮，显示加载状态
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner"></span>正在识别...';
+                showStatus('正在上传音频文件并识别...', 'loading');
+                hideResult();
+
+                // 准备表单数据
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+                formData.append('language', document.getElementById('language').value);
+                formData.append('prompt', document.getElementById('prompt').value);
+                
+                // 根据当前标签添加参数
+                if (currentTab === 'dashscope') {
+                    const apiKey = document.getElementById('api-key').value.trim();
+                    if (!apiKey) {
+                        showStatus('请输入 DashScope API Key', 'error');
+                        return;
+                    }
+                    formData.append('model', document.getElementById('model').value);
+                    
+                    // 发送请求
+                    const endpoint = '/v1/audio/transcriptions';
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`
+                        },
+                        body: formData
+                    });
+                    
+                    await handleResponse(response);
+                    
+                } else if (currentTab === 'zai') {
+                    // Z.ai 代理模式
+                    const upstreamUrl = document.getElementById('upstream-url').value.trim();
+                    if (!upstreamUrl) {
+                        showStatus('请输入 Z.ai 代理地址', 'error');
+                        return;
+                    }
+                    
+                    formData.append('model', document.getElementById('zai-model').value);
+                    formData.append('upstream_url', upstreamUrl); // 传递代理地址
+                    
+                    // 发送请求 (不需要Authorization header)
+                    const endpoint = '/v1/audio/transcriptions';
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    await handleResponse(response);
+                    
+                } else if (currentTab === 'custom') {
+                    // 自定义代理模式
+                    const customUrl = document.getElementById('custom-url').value.trim();
+                    const customKey = document.getElementById('custom-key').value.trim();
+                    const customHeader = document.getElementById('custom-header').value;
+                    
+                    if (!customUrl) {
+                        showStatus('请输入自定义代理域名', 'error');
+                        return;
+                    }
+                    
+                    if (!customKey) {
+                        showStatus('请输入 API Key', 'error');
+                        return;
+                    }
+                    
+                    // 自动构建完整的API URL
+                    const fullApiUrl = customUrl.endsWith('/') ? customUrl + 'v1/audio/transcriptions' : customUrl + '/v1/audio/transcriptions';
+                    
+                    formData.append('model', document.getElementById('custom-model').value);
+                    formData.append('upstream_url', fullApiUrl); // 传递完整API地址
+                    console.log('自定义代理完整地址:', fullApiUrl);
+                    formData.append('custom_key', customKey); // 传递API Key
+                    formData.append('custom_header', customHeader); // 传递认证方式
+                    
+                    // 发送请求
+                    const endpoint = '/v1/audio/transcriptions';
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    await handleResponse(response);
+                }
+
+            } catch (error) {
+                console.error('请求失败:', error);
+                showStatus(`请求失败: ${error.message}`, 'error');
+                showResult(`错误详情:\n${error.message}\n\n堆栈信息:\n${error.stack}`, true);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            }
+        }
+
+        async function handleResponse(response) {
+            const responseText = await response.text();
+            
+            if (!response.ok) {
+                showStatus(`请求失败 (${response.status}): ${response.statusText}`, 'error');
+                showResult(`HTTP ${response.status} ${response.statusText}\n\n响应内容:\n${responseText}`, true);
+                return;
+            }
+
+            let result;
+            try {
+                result = JSON.parse(responseText);
+            } catch (e) {
+                showStatus('响应格式错误', 'error');
+                showResult(`无法解析 JSON 响应:\n\n${responseText}`, true);
+                return;
+            }
+
+            if (result.error) {
+                showStatus('识别失败', 'error');
+                showResult(`错误信息:\n${JSON.stringify(result, null, 2)}`, true);
+                return;
+            }
+
+            // 成功
+            showStatus('识别成功！', 'success');
+            showResult(`识别结果:\n\n${result.text || '无文本内容'}\n\n完整响应:\n${JSON.stringify(result, null, 2)}`);
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        function showResult(content, isError = false) {
+            const result = document.getElementById('result');
+            result.textContent = content;
+            result.style.display = 'block';
+            
+            if (isError) {
+                result.style.background = '#7f1d1d';
+            } else {
+                result.style.background = '#1f2937';
+            }
+        }
+
+        function hideResult() {
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('status').style.display = 'none';
+        }
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Qwen3 语音识别服务已准备就绪');
+            console.log('支持DashScope和Z.ai代理两种模式');
+        });
+    </script>
+</body>
+</html>

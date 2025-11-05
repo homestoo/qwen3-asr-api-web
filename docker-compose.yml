@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  qwen3-asr:
+    build: .
+    ports:
+      - "8888:8888"
+    environment:
+      - NODE_ENV=production
+      - PORT=8888
+      # DashScope API Key (可选，也可以通过前端传入)
+      # - DASHSCOPE_API_KEY=your-dashscope-api-key
+      # Z.ai代理地址 (可选)
+      # - UPSTREAM_ASR_ENDPOINT=https://your-zai-proxy.com
+    volumes:
+      # 持久化上传文件（可选）
+      - ./uploads:/app/uploads
+      # 日志挂载（可选）
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8888/healthz', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - qwen3-asr-network
+
+networks:
+  qwen3-asr-network:
+    driver: bridge
+
