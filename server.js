@@ -13,8 +13,24 @@ const PORT = 8888;
 
 // 中间件
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  limit: '100mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.static('.'));
+
+// 添加全局请求日志中间件
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+  }
+  console.log('---');
+  next();
+});
 
 // 配置multer用于文件上传
 const upload = multer({ 
@@ -90,10 +106,128 @@ app.get('/v1/audio/debug', (req, res) => {
   });
 });
 
-// 兼容OpenAI的转录API
-app.post('/v1/audio/transcriptions', upload.single('file'), async (req, res) => {
+// 专门处理JSON格式的转录请求 (spokenly可能使用这种格式)
+app.post('/v1/audio/transcriptions', async (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  
+  // 如果是JSON格式，特殊处理
+  if (contentType.includes('application/json')) {
+    console.log('========== 检测到JSON格式请求 ==========');
+    try {
+      console.log('原始请求体 (Buffer length):', req.rawBody ? req.rawBody.length : '无');
+      const rawBodyText = req.rawBody ? req.rawBody.toString('utf8') : '';
+      console.log('原始请求体 (前500字符):', rawBodyText.substring(0, 500));
+      
+      // 手动解析JSON以防express.json()失败
+      let jsonBody;
+      try {
+        jsonBody = JSON.parse(rawBodyText);
+      } catch (parseError) {
+        console.error('JSON解析失败:', parseError);
+        return res.status(400).json({ 
+          error: "Invalid JSON", 
+          detail: parseError.message,
+          received_body: rawBodyText.substring(0, 1000)
+        });
+      }
+      
+      console.log('解析后的JSON:', JSON.stringify(jsonBody, null, 2));
+      
+      // 检查是否有音频文件数据
+      if (!jsonBody.audio_file) {
+        return res.status(400).json({ 
+          error: "missing audio_file field", 
+          received_fields: Object.keys(jsonBody)
+        });
+      }
+      
+      // 创建虚拟的file对象供后续处理
+      const audioData = jsonBody.audio_file;
+      let audioBuffer;
+      let fileName = 'audio.wav';
+      let mimeType = 'audio/wav';
+      
+      if (typeof audioData === 'string') {
+        // 处理base64字符串
+        const base64Data = audioData.includes('base64,') 
+          ? audioData.split('base64,')[1] 
+          : audioData;
+        audioBuffer = Buffer.from(base64Data, 'base64');
+      } else if (audioData.data) {
+        // 处理对象格式
+        audioBuffer = Buffer.from(audioData.data, 'base64');
+        fileName = audioData.name || 'audio.wav';
+        mimeType = audioData.type || 'audio/wav';
+      } else {
+        return res.status(400).json({ 
+          error: "invalid audio_file format", 
+          received_type: typeof audioData
+        });
+      }
+      
+      const virtualFile = {
+        fieldname: 'file',
+        originalname: fileName,
+        mimetype: mimeType,
+        size: audioBuffer.length,
+        buffer: audioBuffer,
+        encoding: '7bit'
+      };
+      
+      console.log('创建的虚拟文件:', {
+        originalname: virtualFile.originalname,
+        size: virtualFile.size,
+        mimetype: virtualFile.mimetype
+      });
+      
+      // 提取其他参数
+      req.file = virtualFile;
+      req.body = {
+        language: jsonBody.language || 'auto',
+        prompt: jsonBody.prompt || jsonBody.context || '',
+        model: jsonBody.model || '',
+        custom_key: jsonBody.custom_key || '',
+        custom_header: jsonBody.custom_header || '',
+        upstream_url: jsonBody.upstream_url || ''
+      };
+      
+      console.log('提取的参数:', req.body);
+      
+      // 继续处理
+      next();
+      
+    } catch (error) {
+      console.error('JSON请求处理失败:', error);
+      return res.status(500).json({ 
+        error: "JSON processing failed", 
+        detail: error.message 
+      });
+    }
+  } else {
+    // 非JSON格式，继续到multer处理
+    next();
+  }
+}, upload.single('file'), async (req, res) => {
   try {
-    console.log('收到转录请求');
+    console.log('========== 收到转录请求 - 完整调试信息 ==========');
+    console.log('请求方法:', req.method);
+    console.log('请求URL:', req.url);
+    console.log('请求头:', JSON.stringify(req.headers, null, 2));
+    console.log('请求体 (form fields):', JSON.stringify(req.body, null, 2));
+    console.log('文件信息:', req.file ? {
+      originalname: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      fieldname: req.file.fieldname,
+      encoding: req.file.encoding
+    } : '无文件');
+    console.log('查询参数:', JSON.stringify(req.query, null, 2));
+    console.log('IP地址:', req.ip || req.connection.remoteAddress);
+    console.log('User-Agent:', req.headers['user-agent']);
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Content-Length:', req.headers['content-length']);
+    console.log('Authorization:', req.headers.authorization ? req.headers.authorization.substring(0, 20) + '...' : '无');
+    console.log('=========================================');
     
     if (!req.file) {
       return res.status(400).json({ error: "missing required file field" });
@@ -164,10 +298,33 @@ app.post('/v1/audio/transcriptions', upload.single('file'), async (req, res) => 
     }
 
   } catch (error) {
-    console.error('转录请求失败:', error);
+    console.error('========== 转录请求失败 - 详细错误信息 ==========');
+    console.error('错误类型:', error.constructor.name);
+    console.error('错误消息:', error.message);
+    console.error('错误堆栈:', error.stack);
+    console.error('请求信息:', {
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      body: req.body,
+      hasFile: !!req.file,
+      file: req.file ? {
+        originalname: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      } : null
+    });
+    console.error('================================================');
+    
     res.status(500).json({ 
       error: "internal server error", 
-      detail: error.message 
+      detail: error.message,
+      debug: {
+        error_type: error.constructor.name,
+        has_file: !!req.file,
+        content_type: req.headers['content-type'],
+        content_length: req.headers['content-length']
+      }
     });
   }
 });
@@ -175,13 +332,24 @@ app.post('/v1/audio/transcriptions', upload.single('file'), async (req, res) => 
 // 本地DashScope处理函数
 async function handleDashscopeLocally(file, language, prompt, modelRaw, dashKey, res) {
   try {
-    const model = (modelRaw || "").replace(/:itn$/i, "") || "qwen3-asr-flash";
-    const enableITN = modelRaw.includes(":itn");
+    // Model mapping: qwen3-asr → qwen3-asr-flash (与EdgeOne版本保持一致)
+    const enableITN = (() => {
+      const m = modelRaw.trim().toLowerCase();
+      return m === ":itn" || m.endsWith(":itn");
+    })();
+    
+    // Extract base model and apply mapping
+    let baseModel = (modelRaw || "").replace(/:itn$/i, "") || "qwen3-asr-flash";
+    
+    // Apply model mapping
+    if (baseModel.toLowerCase() === "qwen3-asr") {
+      baseModel = "qwen3-asr-flash";
+    }
 
-    console.log(`使用DashScope模型: ${model}, ITN: ${enableITN}`);
+    console.log(`使用DashScope模型: ${baseModel}, ITN: ${enableITN}, 原始模型: ${modelRaw}`);
 
     // 1) 获取临时上传策略
-    const policyUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
+    const policyUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(baseModel)}`;
     console.log('获取上传策略:', policyUrl);
 
     const policyResp = await fetch(policyUrl, {
@@ -276,7 +444,7 @@ async function handleDashscopeLocally(file, language, prompt, modelRaw, dashKey,
     };
 
     const body = {
-      model,
+      model: baseModel,
       input: {
         messages: [
           { role: "system", content: [{ text: prompt || "" }] },
