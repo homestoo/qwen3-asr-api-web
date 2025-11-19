@@ -1,5 +1,20 @@
 # Qwen3 ASR 语音识别服务部署指南
 
+## 🆕 更新日志
+
+### v2.0.0 - EdgeOne版本重大更新
+- ✨ **Spokenly兼容**：支持spokenly平台的JSON格式直接调用
+- ✨ **OpenAI格式中转**：完美支持OpenAI multipart/form-data格式
+- 🧠 **智能模型映射**：qwen3-asr → qwen3-asr-flash 自动映射
+- 🔧 **UTF-8 BOM修复**：解决音频文件编码问题，提升识别准确率
+- 🌊 **流式响应**：支持Server-Sent Events实时转录
+- 🛡️ **文件验证增强**：支持16种音频格式，10MB/3分钟限制
+- ⚡ **二进制优化**：修复音频传输损坏问题
+- 🎯 **生产就绪**：注释调试日志，优化性能
+- 📋 **模型映射规则**：
+  - `qwen3-asr` → `qwen3-asr-flash`
+  - `qwen3-asr:itn` → `qwen3-asr-flash:itn`
+
 ## 📋 项目概述
 
 这是一个兼容OpenAI接口的Qwen3语音识别(ASR)服务，支持多种部署方式。提供完整的语音转文字功能，包括多语言支持、智能标点格式化，以及与OpenAI Whisper API完全兼容的接口。
@@ -30,9 +45,13 @@
 - ✅ **多服务支持**：DashScope、Z.ai代理、自定义代理三种服务
 - ✅ **多种部署方式**：本地开发、Docker容器、EdgeOne Pages云部署
 - ✅ **标准格式支持**：支持标准OpenAI multipart/form-data格式
-- ✅ **多种音频格式**：支持MP3、WAV、M4A、FLAC、OGG等
-- ✅ **多语言支持**：中文、英文、日文、韩文自动检测
+- ✅ **JSON格式支持**：支持JSON格式的音频数据传输（spokenly兼容）
+- ✅ **多种音频格式**：支持MP3、WAV、M4A、FLAC、OGG等16种格式
+- �� **多语言支持**：中文、英文、日文、韩文自动检测
 - ✅ **ITN支持**：逆文本标准化（智能标点和格式化）
+- ✅ **模型映射**：智能模型映射（qwen3-asr → qwen3-asr-flash）
+- ✅ **流式支持**：支持Server-Sent Events流式响应
+- ✅ **文件验证**：音频文件大小限制（10MB）和时长验证（3分钟）
 - ✅ **Web调试界面**：直观的音频上传和识别界面
 - ✅ **完整CORS支持**：支持跨域请求
 - ✅ **详细调试日志**：方便问题排查和性能监控
@@ -283,6 +302,57 @@ https://your-app-name.pages.tencentcloud.com
 在EdgeOne Pages控制台配置：
 - `UPSTREAM_ASR_ENDPOINT`：Z.ai代理服务的默认地址
 
+### ✨ EdgeOne版本新功能
+
+#### 最新修复内容
+- ✅ **Spokenly直接调用支持**：完全兼容spokenly的JSON格式请求
+- ✅ **OpenAI格式中转**：支持标准OpenAI multipart/form-data格式中转
+- ✅ **智能模型映射**：自动将qwen3-asr映射为qwen3-asr-flash
+- ✅ **UTF-8 BOM处理**：解决音频文件编码问题，提升识别准确率
+- ✅ **流式响应支持**：支持Server-Sent Events实时流式转录
+- ✅ **音频文件验证**：支持16种音频格式，10MB大小限制，3分钟时长限制
+- ✅ **二进制数据优化**：修复二进制音频数据传输损坏问题
+- ✅ **完整调试优化**：注释调试日志，适合生产环境部署
+
+#### 支持的音频格式
+EdgeOne版本支持以下音频格式：
+- **音频格式**：aac、amr、avi、aiff、flac、flv、m4a、mkv、mp3、mp4、mpeg、ogg、opus、wav、webm、wma、wmv
+- **文件大小**：最大10MB
+- **音频时长**：最大3分钟
+
+#### 模型映射规则
+```javascript
+// 自动映射，用户无需修改代码
+qwen3-asr      → qwen3-asr-flash
+qwen3-asr:itn → qwen3-asr-flash:itn
+qwen3-asr-flash → qwen3-asr-flash (无变化)
+qwen3-asr-flash:itn → qwen3-asr-flash:itn (无变化)
+```
+
+#### Spokenly兼容性
+支持spokenly平台的直接调用，无需修改现有代码：
+
+**spokenly请求格式示例：**
+```json
+{
+  "audio_file": {
+    "data": "base64编码的音频数据",
+    "name": "recording.mp3",
+    "type": "audio/mpeg"
+  },
+  "language": "zh",
+  "model": "qwen3-asr",
+  "context": "会议录音"
+}
+```
+
+**响应格式：**
+```json
+{
+  "text": "识别出的文本内容"
+}
+```
+
 ---
 
 ## 📝 API文档
@@ -299,17 +369,21 @@ https://your-app-name.pages.tencentcloud.com
 #### 请求格式
 - **方法**：POST
 - **URL**：`/v1/audio/transcriptions`
-- **Content-Type**：multipart/form-data
+- **Content-Type**：multipart/form-data 或 application/json
 - **认证**：Authorization Bearer 或 X-API-Key
 
 #### 请求参数
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| file | File | 是 | - | 音频文件 |
+| file | File/Object | 是 | - | 音频文件或base64数据 |
+| audio_file | Object | 否 | - | JSON格式时的音频数据（spokenly兼容） |
 | language | String | 否 | auto | 语言代码 |
 | model | String | 否 | qwen3-asr-flash | 模型名称 |
 | prompt | String | 否 | - | 提示词 |
+| context | String | 否 | - | 上下文提示（JSON格式） |
+| enable_itn | Boolean | 否 | false | 启用ITN |
+| stream | Boolean | 否 | false | 启用流式响应 |
 | upstream_url | String | 否 | - | Z.ai或自定义代理地址 |
 | custom_key | String | 否 | - | 自定义代理API Key |
 | custom_header | String | 否 | - | 认证方式 |
@@ -323,10 +397,15 @@ https://your-app-name.pages.tencentcloud.com
 
 #### 支持的模型
 - `qwen3-asr-flash`：快速识别（默认）
-- `qwen3-asr`：标准识别
+- `qwen3-asr`：标准识别（自动映射为qwen3-asr-flash）
 - `qwen3-asr-flash:itn`：快速+ITN
-- `qwen3-asr:itn`：标准+ITN
+- `qwen3-asr:itn`：标准+ITN（自动映射为qwen3-asr-flash:itn）
 - `paraformer-realtime-8k-v1`：阿里云Paraformer模型
+
+#### 智能模型映射
+支持自动模型映射，简化使用：
+- `qwen3-asr` → `qwen3-asr-flash`
+- `qwen3-asr:itn` → `qwen3-asr-flash:itn`
 
 #### 响应格式
 ```json
@@ -345,22 +424,50 @@ https://your-app-name.pages.tencentcloud.com
 
 ### 使用示例
 
-#### curl示例
+#### 1. 标准multipart格式（OpenAI兼容）
 ```bash
 curl -X POST http://localhost:8888/v1/audio/transcriptions \
   -H "Authorization: Bearer sk-your-dashscope-key" \
   -F "file=@audio.mp3" \
   -F "language=zh" \
-  -F "model=qwen3-asr-flash" \
+  -F "model=qwen3-asr" \
   -F "prompt=这是技术讨论的录音"
 ```
 
+#### 2. JSON格式（spokenly兼容）
+```bash
+curl -X POST http://localhost:8888/v1/audio/transcriptions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-dashscope-key" \
+  -d '{
+    "audio_file": {
+      "data": "base64编码的音频数据",
+      "name": "audio.mp3",
+      "type": "audio/mpeg"
+    },
+    "language": "zh",
+    "model": "qwen3-asr",
+    "context": "这是技术讨论的录音"
+  }'
+```
+
+#### 3. 流式响应
+```bash
+curl -X POST http://localhost:8888/v1/audio/transcriptions?stream=true \
+  -H "Authorization: Bearer sk-your-dashscope-key" \
+  -F "file=@audio.mp3" \
+  -F "language=zh" \
+  -F "model=qwen3-asr:itn"
+```
+
 #### JavaScript示例
+
+**标准multipart格式：**
 ```javascript
 const formData = new FormData();
 formData.append('file', audioFile);
 formData.append('language', 'zh');
-formData.append('model', 'qwen3-asr-flash');
+formData.append('model', 'qwen3-asr'); // 自动映射为qwen3-asr-flash
 
 const response = await fetch('http://localhost:8888/v1/audio/transcriptions', {
   method: 'POST',
@@ -368,6 +475,37 @@ const response = await fetch('http://localhost:8888/v1/audio/transcriptions', {
     'Authorization': 'Bearer sk-your-dashscope-key'
   },
   body: formData
+});
+
+const result = await response.json();
+console.log('识别结果:', result.text);
+```
+
+**JSON格式（spokenly兼容）：**
+```javascript
+// 将文件转换为base64
+const base64Audio = await new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result.split(',')[1]);
+  reader.readAsDataURL(audioFile);
+});
+
+const response = await fetch('http://localhost:8888/v1/audio/transcriptions', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer sk-your-dashscope-key'
+  },
+  body: JSON.stringify({
+    audio_file: {
+      data: base64Audio,
+      name: audioFile.name,
+      type: audioFile.type
+    },
+    language: 'zh',
+    model: 'qwen3-asr:itn', // 自动映射为qwen3-asr-flash:itn
+    context: '这是技术讨论的录音'
+  })
 });
 
 const result = await response.json();
